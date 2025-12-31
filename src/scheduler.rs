@@ -87,17 +87,20 @@ async fn dispatch_notifications(bot: &Bot, pool: &SqlitePool, time: &str) -> Res
 }
 
 async fn ical_update_loop(pool: Arc<SqlitePool>) {
-    // Run immediately on start, then every 4 weeks?
-    // Or run immediately then sleep?
-    // Let's run immediately.
+    // Run immediately on start
 
     loop {
-        if let Err(e) = update_all_icals(&pool).await {
-            error!("Error updating iCals: {:?}", e);
+        match update_all_icals(&pool).await {
+            Ok(_) => {
+                info!("iCal update completed successfully. Sleeping for {} days.", ICAL_UPDATE_INTERVAL_DAYS);
+                tokio::time::sleep(tokio::time::Duration::from_secs(ICAL_UPDATE_INTERVAL_DAYS as u64 * 24 * 60 * 60)).await;
+            }
+            Err(e) => {
+                error!("Error updating iCals: {:?}. Retrying in 1 hour.", e);
+                // Retry logic: sleep for 1 hour then try again, instead of waiting 28 days.
+                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+            }
         }
-
-        // Sleep for 28 days
-        tokio::time::sleep(tokio::time::Duration::from_secs(ICAL_UPDATE_INTERVAL_DAYS as u64 * 24 * 60 * 60)).await;
     }
 }
 
@@ -131,7 +134,7 @@ async fn update_all_icals(pool: &SqlitePool) -> Result<()> {
         info!("Updating iCal for location: {}", loc_id);
 
         let url = format!(
-            "https://cardomap.idu.de/cardo3Apps/IDU_DD_Stadtplan/abfallkalender_ical.php?standortid={}&startdate={}&enddate={}",
+            "https://stadtplan.dresden.de/project/cardo3Apps/IDU_DDStadtplan/abfall/ical.ashx?STANDORT={}&DATUM_VON={}&DATUM_BIS={}",
             loc_id, start_date, end_date
         );
 

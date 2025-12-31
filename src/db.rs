@@ -2,6 +2,7 @@ use sqlx::sqlite::SqlitePool;
 use sqlx::migrate::MigrateDatabase;
 use anyhow::{Result, Context};
 use std::env;
+use std::str::FromStr;
 
 pub type DbPool = SqlitePool;
 
@@ -15,7 +16,13 @@ pub async fn init_db() -> Result<DbPool> {
         println!("Database {} already exists", database_url);
     }
 
-    let pool = SqlitePool::connect(&database_url).await.context("Failed to connect to database")?;
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::from_str(&database_url)?
+                .foreign_keys(true)
+        )
+        .await
+        .context("Failed to connect to database")?;
 
     sqlx::migrate!("./migrations")
         .run(&pool)
