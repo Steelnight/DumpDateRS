@@ -1,12 +1,13 @@
+use crate::store;
+use crate::waste::WasteType;
+use sqlx::SqlitePool;
+use std::sync::Arc;
 use teloxide::{
     dispatching::dialogue::InMemStorage,
     prelude::*,
     types::{InlineKeyboardButton, InlineKeyboardMarkup},
     utils::command::BotCommands,
 };
-use sqlx::SqlitePool;
-use std::sync::Arc;
-use crate::store;
 
 type MyDialogue = Dialogue<State, InMemStorage<State>>;
 type HandlerResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -39,26 +40,22 @@ pub async fn run_bot(bot: Bot, pool: SqlitePool) {
         .branch(
             dptree::entry()
                 .filter_command::<Command>()
-                .endpoint(command_handler)
+                .endpoint(command_handler),
         )
-        .branch(
-            dptree::case![State::AwaitingLocation]
-                .endpoint(receive_location_handler)
-        )
-        .branch(
-            dptree::case![State::Start]
-                .endpoint(invalid_state_handler)
-        );
+        .branch(dptree::case![State::AwaitingLocation].endpoint(receive_location_handler))
+        .branch(dptree::case![State::Start].endpoint(invalid_state_handler));
 
-    let callback_handler = Update::filter_callback_query()
-        .endpoint(callback_query_handler);
+    let callback_handler = Update::filter_callback_query().endpoint(callback_query_handler);
 
-    Dispatcher::builder(bot, dptree::entry().branch(handler).branch(callback_handler))
-        .dependencies(dptree::deps![InMemStorage::<State>::new(), pool])
-        .enable_ctrlc_handler()
-        .build()
-        .dispatch()
-        .await;
+    Dispatcher::builder(
+        bot,
+        dptree::entry().branch(handler).branch(callback_handler),
+    )
+    .dependencies(dptree::deps![InMemStorage::<State>::new(), pool])
+    .enable_ctrlc_handler()
+    .build()
+    .dispatch()
+    .await;
 }
 
 async fn command_handler(
@@ -75,11 +72,15 @@ async fn command_handler(
             dialogue.update(State::AwaitingLocation).await?;
         }
         Command::Settings => {
-             settings_handler(bot, &msg.chat.id, &pool).await?;
+            settings_handler(bot, &msg.chat.id, &pool).await?;
         }
         Command::Stop => {
             store::delete_user(&pool, msg.chat.id.0).await?;
-            bot.send_message(msg.chat.id, "You have been unsubscribed and your data deleted.").await?;
+            bot.send_message(
+                msg.chat.id,
+                "You have been unsubscribed and your data deleted.",
+            )
+            .await?;
         }
     }
     Ok(())
@@ -94,20 +95,27 @@ async fn receive_location_handler(
     if let Some(text) = msg.text() {
         let location_id = text.trim();
         if location_id.is_empty() {
-             bot.send_message(msg.chat.id, "Please enter a valid Location ID.").await?;
-             return Ok(());
+            bot.send_message(msg.chat.id, "Please enter a valid Location ID.")
+                .await?;
+            return Ok(());
         }
 
         // Save user
         store::create_user(&pool, msg.chat.id.0, location_id).await?;
 
         // Add default subscriptions
-        store::add_subscription(&pool, msg.chat.id.0, "Bio").await?;
-        store::add_subscription(&pool, msg.chat.id.0, "Rest").await?;
-        store::add_subscription(&pool, msg.chat.id.0, "Papier").await?;
-        store::add_subscription(&pool, msg.chat.id.0, "Gelb").await?;
+        for waste in WasteType::default_subscriptions() {
+            store::add_subscription(&pool, msg.chat.id.0, waste.as_str()).await?;
+        }
 
-        bot.send_message(msg.chat.id, format!("Location set to '{}'. Default subscriptions added.", location_id)).await?;
+        bot.send_message(
+            msg.chat.id,
+            format!(
+                "Location set to '{}'. Default subscriptions added.",
+                location_id
+            ),
+        )
+        .await?;
 
         // Show settings
         settings_handler(bot, &msg.chat.id, &pool).await?;
@@ -117,48 +125,27 @@ async fn receive_location_handler(
     Ok(())
 }
 
-async fn invalid_state_handler(
-    bot: Bot,
-    msg: Message,
-) -> HandlerResult {
-    bot.send_message(msg.chat.id, "Please use /start or /setup to begin.").await?;
+async fn invalid_state_handler(bot: Bot, msg: Message) -> HandlerResult {
+    bot.send_message(msg.chat.id, "Please use /start or /setup to begin.")
+        .await?;
     Ok(())
 }
 
 async fn settings_handler(bot: Bot, chat_id: &ChatId, pool: &SqlitePool) -> HandlerResult {
     let user = store::get_user(pool, chat_id.0).await?;
     if user.is_none() {
-        bot.send_message(*chat_id, "Please run /setup first.").await?;
+        bot.send_message(*chat_id, "Please run /setup first.")
+            .await?;
         return Ok(());
     }
 
     let (_, notify_time) = user.unwrap();
     let subs = store::get_subscriptions(pool, chat_id.0).await?;
 
-    // Build keyboard
-    let mut keyboard = Vec::new();
-
-    // Toggle buttons for Waste Types
-    let all_types = vec!["Bio", "Rest", "Papier", "Gelb", "Weihnachtsbaum"];
-    for w_type in all_types {
-        let is_subbed = subs.contains(&w_type.to_string());
-        let label = format!("{} {}", if is_subbed { "✅" } else { "❌" }, w_type);
-        let action = if is_subbed { "unsub" } else { "sub" };
-        let data = format!("{}:{}", action, w_type);
-        keyboard.push(vec![InlineKeyboardButton::callback(label, data)]);
-    }
-
-    // Time toggle
-    let time_label = format!("Notify Time: {}", notify_time);
-    let next_time = if notify_time == "06:00" { "18:00" } else { "06:00" };
-    let time_data = format!("time:{}", next_time);
-    keyboard.push(vec![InlineKeyboardButton::callback(time_label, time_data)]);
-
-    // Stop button
-    keyboard.push(vec![InlineKeyboardButton::callback("🛑 Unsubscribe All", "stop")]);
+    let keyboard = build_settings_keyboard(&subs, &notify_time);
 
     bot.send_message(*chat_id, "Your Settings:")
-        .reply_markup(InlineKeyboardMarkup::new(keyboard))
+        .reply_markup(keyboard)
         .await?;
 
     Ok(())
@@ -175,7 +162,7 @@ async fn callback_query_handler(
         let chat_id = q.message.as_ref().map(|m| m.chat().id).unwrap_or(ChatId(0)); // Should exist
 
         if chat_id.0 == 0 {
-             return Ok(());
+            return Ok(());
         }
 
         match action {
@@ -192,16 +179,23 @@ async fn callback_query_handler(
                 }
             }
             "time" => {
-                 if parts.len() > 1 {
+                if parts.len() > 1 {
                     store::update_notify_time(&pool, chat_id.0, parts[1]).await?;
                     answer_and_refresh(&bot, &q, chat_id, &pool, "Time updated!").await?;
-                 }
+                }
             }
             "stop" => {
                 store::delete_user(&pool, chat_id.0).await?;
-                bot.answer_callback_query(q.id).text("Unsubscribed from everything.").await?;
+                bot.answer_callback_query(q.id)
+                    .text("Unsubscribed from everything.")
+                    .await?;
                 if let Some(msg) = q.message {
-                    bot.edit_message_text(chat_id, msg.id(), "You have been unsubscribed and your data deleted.").await?;
+                    bot.edit_message_text(
+                        chat_id,
+                        msg.id(),
+                        "You have been unsubscribed and your data deleted.",
+                    )
+                    .await?;
                 }
             }
             _ => {}
@@ -210,16 +204,14 @@ async fn callback_query_handler(
     Ok(())
 }
 
-async fn answer_and_refresh(bot: &Bot, q: &CallbackQuery, chat_id: ChatId, pool: &SqlitePool, text: &str) -> HandlerResult {
+async fn answer_and_refresh(
+    bot: &Bot,
+    q: &CallbackQuery,
+    chat_id: ChatId,
+    pool: &SqlitePool,
+    text: &str,
+) -> HandlerResult {
     bot.answer_callback_query(&q.id).text(text).await?;
-
-    // Refresh settings message
-    // We need to call settings logic but edit message instead of sending new
-    // Refactoring settings_handler to return Markup or Text would be better, but we can just copy logic for now
-    // or call settings_handler which sends a NEW message? The prompt said "Present the user with an interactive menu...".
-    // Usually inline keyboards update in-place.
-
-    // Let's implement edit_settings_message
 
     let user = store::get_user(pool, chat_id.0).await?;
     if user.is_none() {
@@ -229,27 +221,45 @@ async fn answer_and_refresh(bot: &Bot, q: &CallbackQuery, chat_id: ChatId, pool:
     let (_, notify_time) = user.unwrap();
     let subs = store::get_subscriptions(pool, chat_id.0).await?;
 
-    let mut keyboard = Vec::new();
-    let all_types = vec!["Bio", "Rest", "Papier", "Gelb", "Weihnachtsbaum"];
-    for w_type in all_types {
-        let is_subbed = subs.contains(&w_type.to_string());
-        let label = format!("{} {}", if is_subbed { "✅" } else { "❌" }, w_type);
-        let action = if is_subbed { "unsub" } else { "sub" };
-        let data = format!("{}:{}", action, w_type);
-        keyboard.push(vec![InlineKeyboardButton::callback(label, data)]);
-    }
-
-    let time_label = format!("Notify Time: {}", notify_time);
-    let next_time = if notify_time == "06:00" { "18:00" } else { "06:00" };
-    let time_data = format!("time:{}", next_time);
-    keyboard.push(vec![InlineKeyboardButton::callback(time_label, time_data)]);
-    keyboard.push(vec![InlineKeyboardButton::callback("🛑 Unsubscribe All", "stop")]);
+    let keyboard = build_settings_keyboard(&subs, &notify_time);
 
     if let Some(msg) = &q.message {
         bot.edit_message_reply_markup(chat_id, msg.id())
-            .reply_markup(InlineKeyboardMarkup::new(keyboard))
+            .reply_markup(keyboard)
             .await?;
     }
 
     Ok(())
+}
+
+fn build_settings_keyboard(subs: &[String], notify_time: &str) -> InlineKeyboardMarkup {
+    let mut keyboard = Vec::new();
+
+    // Toggle buttons for Waste Types
+    for w_type in WasteType::supported_types() {
+        let w_str = w_type.as_str();
+        let is_subbed = subs.contains(&w_str.to_string());
+        let label = format!("{} {}", if is_subbed { "✅" } else { "❌" }, w_str);
+        let action = if is_subbed { "unsub" } else { "sub" };
+        let data = format!("{}:{}", action, w_str);
+        keyboard.push(vec![InlineKeyboardButton::callback(label, data)]);
+    }
+
+    // Time toggle
+    let time_label = format!("Notify Time: {}", notify_time);
+    let next_time = if notify_time == "06:00" {
+        "18:00"
+    } else {
+        "06:00"
+    };
+    let time_data = format!("time:{}", next_time);
+    keyboard.push(vec![InlineKeyboardButton::callback(time_label, time_data)]);
+
+    // Stop button
+    keyboard.push(vec![InlineKeyboardButton::callback(
+        "🛑 Unsubscribe All",
+        "stop",
+    )]);
+
+    InlineKeyboardMarkup::new(keyboard)
 }

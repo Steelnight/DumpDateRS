@@ -1,11 +1,11 @@
-use std::sync::Arc;
-use sqlx::SqlitePool;
-use teloxide::prelude::*;
-use chrono::{Local, Duration, Timelike};
-use anyhow::Result;
-use log::{info, error};
 use crate::store;
 use crate::waste::parse_ical;
+use anyhow::Result;
+use chrono::{Duration, Local, Timelike};
+use log::{error, info};
+use sqlx::SqlitePool;
+use std::sync::Arc;
+use teloxide::prelude::*;
 
 // Constants
 const ICAL_UPDATE_INTERVAL_DAYS: i64 = 28; // Every 4 weeks
@@ -76,8 +76,14 @@ async fn dispatch_notifications(bot: &Bot, pool: &SqlitePool, time: &str) -> Res
         if let Err(e) = bot.send_message(chat_id, message).await {
             error!("Failed to send notification to {}: {:?}", task.chat_id, e);
             // Handle block/deactivated
-            if let teloxide::RequestError::Api(teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated) = &e {
-                info!("User {} blocked bot or is deactivated. Removing...", task.chat_id);
+            if let teloxide::RequestError::Api(
+                teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated,
+            ) = &e
+            {
+                info!(
+                    "User {} blocked bot or is deactivated. Removing...",
+                    task.chat_id
+                );
                 let _ = store::delete_user(pool, task.chat_id).await;
             }
         }
@@ -92,8 +98,14 @@ async fn ical_update_loop(pool: Arc<SqlitePool>) {
     loop {
         match update_all_icals(&pool).await {
             Ok(_) => {
-                info!("iCal update completed successfully. Sleeping for {} days.", ICAL_UPDATE_INTERVAL_DAYS);
-                tokio::time::sleep(tokio::time::Duration::from_secs(ICAL_UPDATE_INTERVAL_DAYS as u64 * 24 * 60 * 60)).await;
+                info!(
+                    "iCal update completed successfully. Sleeping for {} days.",
+                    ICAL_UPDATE_INTERVAL_DAYS
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(
+                    ICAL_UPDATE_INTERVAL_DAYS as u64 * 24 * 60 * 60,
+                ))
+                .await;
             }
             Err(e) => {
                 error!("Error updating iCals: {:?}. Retrying in 1 hour.", e);
@@ -151,7 +163,9 @@ async fn update_all_icals(pool: &SqlitePool) -> Result<()> {
 
                             match parse_ical(&text) {
                                 Ok(events) => {
-                                    if let Err(e) = store::upsert_events(pool, &loc_id, &events).await {
+                                    if let Err(e) =
+                                        store::upsert_events(pool, &loc_id, &events).await
+                                    {
                                         error!("Failed to upsert events for {}: {:?}", loc_id, e);
                                     }
                                 }
@@ -163,7 +177,11 @@ async fn update_all_icals(pool: &SqlitePool) -> Result<()> {
                         Err(e) => error!("Failed to read response body for {}: {:?}", loc_id, e),
                     }
                 } else {
-                    error!("Failed to fetch iCal for {}: Status {}", loc_id, resp.status());
+                    error!(
+                        "Failed to fetch iCal for {}: Status {}",
+                        loc_id,
+                        resp.status()
+                    );
                 }
             }
             Err(e) => error!("Failed to connect for {}: {:?}", loc_id, e),

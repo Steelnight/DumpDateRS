@@ -1,25 +1,30 @@
-use sqlx::sqlite::SqlitePool;
+use anyhow::{Context, Result};
 use sqlx::migrate::MigrateDatabase;
-use anyhow::{Result, Context};
+use sqlx::sqlite::SqlitePool;
 use std::env;
 use std::str::FromStr;
 
 pub type DbPool = SqlitePool;
 
 pub async fn init_db() -> Result<DbPool> {
-    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:waste_bot.db".to_string());
+    let database_url =
+        env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:waste_bot.db".to_string());
 
-    if !sqlx::Sqlite::database_exists(&database_url).await.unwrap_or(false) {
+    if !sqlx::Sqlite::database_exists(&database_url)
+        .await
+        .unwrap_or(false)
+    {
         println!("Creating database {}", database_url);
-        sqlx::Sqlite::create_database(&database_url).await.context("Failed to create database")?;
+        sqlx::Sqlite::create_database(&database_url)
+            .await
+            .context("Failed to create database")?;
     } else {
         println!("Database {} already exists", database_url);
     }
 
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .connect_with(
-            sqlx::sqlite::SqliteConnectOptions::from_str(&database_url)?
-                .foreign_keys(true)
+            sqlx::sqlite::SqliteConnectOptions::from_str(&database_url)?.foreign_keys(true),
         )
         .await
         .context("Failed to connect to database")?;
