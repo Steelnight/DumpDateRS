@@ -145,12 +145,15 @@ async fn update_all_icals(pool: &SqlitePool) -> Result<()> {
     for loc_id in locations {
         info!("Updating iCal for location: {}", loc_id);
 
-        let url = format!(
-            "https://stadtplan.dresden.de/project/cardo3Apps/IDU_DDStadtplan/abfall/ical.ashx?STANDORT={}&DATUM_VON={}&DATUM_BIS={}",
-            loc_id, start_date, end_date
-        );
+        let params = [
+            ("STANDORT", loc_id.as_str()),
+            ("DATUM_VON", start_date.as_str()),
+            ("DATUM_BIS", end_date.as_str()),
+        ];
 
-        match client.get(&url).send().await {
+        let url = "https://stadtplan.dresden.de/project/cardo3Apps/IDU_DDStadtplan/abfall/ical.ashx";
+
+        match client.get(url).query(&params).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
                     match resp.text().await {
