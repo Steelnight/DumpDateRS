@@ -20,6 +20,12 @@ pub async fn create_schema(pool: &DbPool) -> Result<()> {
     .await
     .context("Failed to create users table")?;
 
+    // Index on users(location_id) for faster reverse lookups from events and distinct location queries
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_users_location_id ON users(location_id);")
+        .execute(pool)
+        .await
+        .context("Failed to create index on users(location_id)")?;
+
     // Subscriptions table
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS subscriptions (
