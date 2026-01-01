@@ -1,7 +1,7 @@
 use crate::store;
 use crate::waste::parse_ical;
 use anyhow::Result;
-use chrono::{Duration, Local, Timelike};
+use chrono::{Datelike, Duration, Local, Timelike};
 use log::{error, info};
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -47,12 +47,17 @@ pub async fn run_scheduler(bot: Bot, pool: SqlitePool) {
     sched.add(notification_job).await.expect("Failed to add notification job");
 
     // Spawn iCal Update Task
-    // Run once a week, e.g., Monday at 4 AM: "0 0 4 * * Mon"
-    // Or simpler: Every day at 4 AM: "0 0 4 * * *"
+    // Run once a month on the first Saturday at 4 AM.
+    // Cron: "0 0 4 * * Sat" (Every Saturday at 4 AM)
+    // Check inside: if day of month <= 7.
     let pool_clone_ical = pool.clone();
-    let ical_job = Job::new_async("0 0 4 * * *", move |_uuid, _l| {
+    let ical_job = Job::new_async("0 0 4 * * Sat", move |_uuid, _l| {
         let pool = pool_clone_ical.clone();
         Box::pin(async move {
+            let now = Local::now();
+            if now.day() > 7 {
+                return;
+            }
             if let Err(e) = update_all_icals(&pool).await {
                 error!("Error updating iCals: {:?}", e);
             }
