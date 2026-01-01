@@ -196,7 +196,7 @@ async fn show_location_settings(
 
     if let Some(loc) = loc {
         let subs = store::get_subscriptions(pool, loc_id).await?;
-        let keyboard = build_settings_keyboard(loc_id, &subs, &loc.notify_time);
+        let keyboard = build_settings_keyboard(loc_id, &subs, &loc.notify_time, loc.notify_offset);
 
         let text = format!(
             "Settings for {}:",
@@ -286,6 +286,21 @@ async fn callback_query_handler(
                     }
                 }
             }
+            "offset" => {
+                 if parts.len() > 2 {
+                    let loc_id = parts[1].parse::<i64>()?;
+                    let current_offset = parts[2].parse::<i64>().unwrap_or(1);
+                    // toggle offset: if 1 (Day Before) -> 0 (Same Day), and vice versa.
+                    let next_offset = if current_offset == 1 { 0 } else { 1 };
+
+                    let locations = store::get_user_locations(&pool, chat_id.0).await?;
+                    if let Some(loc) = locations.iter().find(|l| l.id == loc_id) {
+                        store::update_notify_offset(&pool, chat_id.0, &loc.location_id, next_offset)
+                            .await?;
+                         refresh_settings(&bot, &q, chat_id, &pool, loc_id, "Day updated!").await?;
+                    }
+                }
+            }
             "delloc" => {
                 if let Ok(loc_id) = parts[1].parse::<i64>() {
                     let locations = store::get_user_locations(&pool, chat_id.0).await?;
@@ -350,7 +365,7 @@ async fn refresh_settings(
     let locations = store::get_user_locations(pool, chat_id.0).await?;
     if let Some(loc) = locations.iter().find(|l| l.id == loc_id) {
         let subs = store::get_subscriptions(pool, loc_id).await?;
-        let keyboard = build_settings_keyboard(loc_id, &subs, &loc.notify_time);
+        let keyboard = build_settings_keyboard(loc_id, &subs, &loc.notify_time, loc.notify_offset);
 
         if let Some(msg) = &q.message {
             bot.edit_message_reply_markup(chat_id, msg.id())
@@ -377,6 +392,7 @@ fn build_settings_keyboard(
     loc_id: i64,
     subs: &[String],
     notify_time: &str,
+    notify_offset: i64,
 ) -> InlineKeyboardMarkup {
     let mut keyboard = Vec::new();
 
@@ -394,6 +410,11 @@ fn build_settings_keyboard(
     let time_label = format!("Notify Time: {}", notify_time);
     let time_data = format!("time:{}:{}", loc_id, notify_time);
     keyboard.push(vec![InlineKeyboardButton::callback(time_label, time_data)]);
+
+    // Offset toggle
+    let offset_label = if notify_offset == 1 { "Day: Day Before" } else { "Day: Same Day" };
+    let offset_data = format!("offset:{}:{}", loc_id, notify_offset);
+    keyboard.push(vec![InlineKeyboardButton::callback(offset_label, offset_data)]);
 
     // Delete Location
     keyboard.push(vec![InlineKeyboardButton::callback(

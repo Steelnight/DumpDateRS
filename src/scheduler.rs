@@ -107,12 +107,10 @@ async fn dispatch_notifications(bot: &Bot, pool: &SqlitePool, time: &str) -> Res
     for task in tasks {
         let chat_id = ChatId(task.chat_id);
 
-        // Determine prefix and context
-        // If notify time is evening (>= 12:00), we assume it's "Tomorrow".
-        // If morning (< 12:00), it's "Today".
-        // This logic must match `get_users_to_notify` in store.rs
-        let is_evening = time >= "12:00";
-        let prefix = if is_evening { "Tomorrow" } else { "Today" };
+        // Determine prefix based on notify_offset
+        // offset 1 = Day Before ("Tomorrow")
+        // offset 0 = Same Day ("Today")
+        let prefix = if task.notify_offset == 1 { "Tomorrow" } else { "Today" };
 
         let loc_label = task.location_alias.as_deref().unwrap_or(&task.location_id);
 
