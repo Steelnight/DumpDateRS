@@ -127,7 +127,11 @@ async fn update_all_icals(pool: &SqlitePool) -> Result<()> {
         .fetch_all(pool)
         .await?;
 
-    let client = reqwest::Client::new();
+    // Sentinel: Added timeout to prevent hanging if the external API is unresponsive.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
     let now = Local::now().date_naive();
     // Start date: today
     // End date: today + 3 months
