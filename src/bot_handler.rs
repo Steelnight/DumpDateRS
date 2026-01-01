@@ -67,7 +67,7 @@ async fn command_handler(
 ) -> HandlerResult {
     match cmd {
         Command::Start | Command::Setup => {
-            bot.send_message(msg.chat.id, "Please enter your Location ID (Standort-ID). You can find it on the Dresden waste management website.")
+            bot.send_message(msg.chat.id, "Please enter your Location ID (Standort-ID).\n\nYou can find it on the Dresden city map: https://stadtplan.dresden.de/?project=abfall")
                 .await?;
             dialogue.update(State::AwaitingLocation).await?;
         }
@@ -97,7 +97,7 @@ async fn receive_location_handler(
         if !crate::waste::is_valid_location_id(location_id) {
             bot.send_message(
                 msg.chat.id,
-                "Invalid Location ID. It must be alphanumeric and max 20 characters.",
+                "Invalid Location ID. It must be alphanumeric and max 20 characters (e.g., 12345 or LOC123).",
             )
             .await?;
             return Ok(());
