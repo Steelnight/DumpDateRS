@@ -3,26 +3,14 @@ use anyhow::Result;
 use sqlx::{sqlite::Sqlite, QueryBuilder, SqlitePool};
 
 // User Operations
-pub async fn create_user(pool: &SqlitePool, chat_id: i64, location_id: &str) -> Result<()> {
+pub async fn create_user(pool: &SqlitePool, chat_id: i64) -> Result<()> {
     sqlx::query!(
-        "INSERT INTO users (id, location_id) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET location_id = excluded.location_id",
-        chat_id,
-        location_id
+        "INSERT INTO users (id) VALUES (?) ON CONFLICT(id) DO NOTHING",
+        chat_id
     )
     .execute(pool)
     .await?;
     Ok(())
-}
-
-pub async fn get_user(pool: &SqlitePool, chat_id: i64) -> Result<Option<(String, String)>> {
-    let rec = sqlx::query!(
-        "SELECT location_id, notify_time FROM users WHERE id = ?",
-        chat_id
-    )
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(rec.map(|r| (r.location_id, r.notify_time)))
 }
 
 pub async fn delete_user(pool: &SqlitePool, chat_id: i64) -> Result<()> {
@@ -32,22 +20,101 @@ pub async fn delete_user(pool: &SqlitePool, chat_id: i64) -> Result<()> {
     Ok(())
 }
 
-pub async fn update_notify_time(pool: &SqlitePool, chat_id: i64, time: &str) -> Result<()> {
-    sqlx::query!(
-        "UPDATE users SET notify_time = ? WHERE id = ?",
-        time,
+pub async fn add_user_location(
+    pool: &SqlitePool,
+    chat_id: i64,
+    location_id: &str,
+    alias: Option<&str>,
+) -> Result<i64> {
+    // Ensure user exists first
+    create_user(pool, chat_id).await?;
+
+    let id = sqlx::query!(
+        "INSERT INTO user_locations (user_id, location_id, alias) VALUES (?, ?, ?)
+         ON CONFLICT(user_id, location_id) DO UPDATE SET alias = excluded.alias
+         RETURNING id",
+        chat_id,
+        location_id,
+        alias
+    )
+    .fetch_one(pool)
+    .await?
+    .id;
+
+    Ok(id)
+}
+
+pub struct UserLocation {
+    pub id: i64,
+    pub location_id: String,
+    pub notify_time: String,
+    pub alias: Option<String>,
+}
+
+pub async fn get_user_locations(pool: &SqlitePool, chat_id: i64) -> Result<Vec<UserLocation>> {
+    let rows = sqlx::query!(
+        "SELECT id, location_id, notify_time, alias FROM user_locations WHERE user_id = ?",
         chat_id
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| UserLocation {
+            id: r.id.expect("id should be present"),
+            location_id: r.location_id,
+            notify_time: r.notify_time,
+            alias: r.alias,
+        })
+        .collect())
+}
+
+pub async fn delete_user_location(
+    pool: &SqlitePool,
+    chat_id: i64,
+    alias_or_id: &str,
+) -> Result<bool> {
+    // Try to delete by alias or exact location_id
+    let result = sqlx::query!(
+        "DELETE FROM user_locations WHERE user_id = ? AND (alias = ? OR location_id = ?)",
+        chat_id,
+        alias_or_id,
+        alias_or_id
     )
     .execute(pool)
     .await?;
-    Ok(())
+
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn update_notify_time(
+    pool: &SqlitePool,
+    chat_id: i64,
+    location_alias_or_id: &str,
+    time: &str,
+) -> Result<bool> {
+    let result = sqlx::query!(
+        "UPDATE user_locations SET notify_time = ? WHERE user_id = ? AND (alias = ? OR location_id = ?)",
+        time,
+        chat_id,
+        location_alias_or_id,
+        location_alias_or_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 // Subscription Operations
-pub async fn add_subscription(pool: &SqlitePool, chat_id: i64, waste_type: &str) -> Result<()> {
+pub async fn add_subscription(
+    pool: &SqlitePool,
+    user_location_id: i64,
+    waste_type: &str,
+) -> Result<()> {
     sqlx::query!(
-        "INSERT INTO subscriptions (user_id, waste_type) VALUES (?, ?) ON CONFLICT DO NOTHING",
-        chat_id,
+        "INSERT INTO subscriptions (user_location_id, waste_type) VALUES (?, ?) ON CONFLICT DO NOTHING",
+        user_location_id,
         waste_type
     )
     .execute(pool)
@@ -55,10 +122,14 @@ pub async fn add_subscription(pool: &SqlitePool, chat_id: i64, waste_type: &str)
     Ok(())
 }
 
-pub async fn remove_subscription(pool: &SqlitePool, chat_id: i64, waste_type: &str) -> Result<()> {
+pub async fn remove_subscription(
+    pool: &SqlitePool,
+    user_location_id: i64,
+    waste_type: &str,
+) -> Result<()> {
     sqlx::query!(
-        "DELETE FROM subscriptions WHERE user_id = ? AND waste_type = ?",
-        chat_id,
+        "DELETE FROM subscriptions WHERE user_location_id = ? AND waste_type = ?",
+        user_location_id,
         waste_type
     )
     .execute(pool)
@@ -66,10 +137,10 @@ pub async fn remove_subscription(pool: &SqlitePool, chat_id: i64, waste_type: &s
     Ok(())
 }
 
-pub async fn get_subscriptions(pool: &SqlitePool, chat_id: i64) -> Result<Vec<String>> {
+pub async fn get_subscriptions(pool: &SqlitePool, user_location_id: i64) -> Result<Vec<String>> {
     let recs = sqlx::query!(
-        "SELECT waste_type FROM subscriptions WHERE user_id = ?",
-        chat_id
+        "SELECT waste_type FROM subscriptions WHERE user_location_id = ?",
+        user_location_id
     )
     .fetch_all(pool)
     .await?;
@@ -85,7 +156,6 @@ pub async fn upsert_events(
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
 
-    // Strategy: Delete all FUTURE events for this location, then insert the new ones.
     let today = chrono::Local::now()
         .date_naive()
         .format("%Y-%m-%d")
@@ -99,10 +169,6 @@ pub async fn upsert_events(
     .execute(&mut *tx)
     .await?;
 
-    // Prepare data for batch insert with chunking to avoid large allocations
-    // Optimization: Reduces database round-trips while staying within SQLite variable limits.
-    // Chunk size of 250 means 750 variables per query (3 cols * 250 rows), well under the strict 999 limit.
-    // Using a fixed-size buffer reduces memory pressure compared to collecting all items first.
     let mut buffer: Vec<(&str, String, &str)> = Vec::with_capacity(250);
 
     for event in events {
@@ -147,6 +213,8 @@ pub async fn upsert_events(
 pub struct NotificationTask {
     pub chat_id: i64,
     pub waste_type: String,
+    pub location_alias: Option<String>,
+    pub location_id: String,
 }
 
 pub async fn get_users_to_notify(
@@ -155,28 +223,22 @@ pub async fn get_users_to_notify(
     current_date: &str,
     next_date: &str,
 ) -> Result<Vec<NotificationTask>> {
-    // check_time is '06:00' or '18:00'
-    // If '06:00', we notify for events TODAY (current_date)
-    // If '18:00', we notify for events TOMORROW (next_date)
-
     // Logic:
-    // Select users where notify_time = check_time
-    // Join subscriptions
-    // Join pickup_events matching location_id and waste_type and date
+    // 1. Find all user_locations where notify_time == check_time
+    // 2. For each, determine if we are checking today or tomorrow.
+    //    If notify_time >= "12:00", check next_date. Else check current_date.
 
-    let target_date = if check_time == "06:00" {
-        current_date
-    } else {
-        next_date
-    };
+    let is_evening = check_time >= "12:00";
+    let target_date = if is_evening { next_date } else { current_date };
 
     let rows = sqlx::query!(
         r#"
-        SELECT u.id as chat_id, s.waste_type
+        SELECT u.id as chat_id, s.waste_type, ul.alias, ul.location_id
         FROM users u
-        JOIN subscriptions s ON u.id = s.user_id
-        JOIN pickup_events e ON u.location_id = e.location_id AND s.waste_type = e.waste_type
-        WHERE u.notify_time = ? AND e.date = ?
+        JOIN user_locations ul ON u.id = ul.user_id
+        JOIN subscriptions s ON ul.id = s.user_location_id
+        JOIN pickup_events e ON ul.location_id = e.location_id AND s.waste_type = e.waste_type
+        WHERE ul.notify_time = ? AND e.date = ?
         "#,
         check_time,
         target_date
@@ -189,6 +251,8 @@ pub async fn get_users_to_notify(
         .map(|r| NotificationTask {
             chat_id: r.chat_id.unwrap_or(0),
             waste_type: r.waste_type,
+            location_alias: r.alias,
+            location_id: r.location_id,
         })
         .collect())
 }

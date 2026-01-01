@@ -37,19 +37,11 @@ async fn notification_loop(bot: Bot, pool: Arc<SqlitePool>) {
         let hour = now.hour();
         let minute = now.minute();
 
-        // We only care if it's 06:00 or 18:00
-        // We allow a window of execution, but we should ensure we only run ONCE per slot.
-        // A simple way is to check if minute == 0.
-
+        // Check every hour at minute 0
         if minute == 0 {
-            if hour == 6 {
-                if let Err(e) = dispatch_notifications(&bot, &pool, "06:00").await {
-                    error!("Error dispatching 06:00 notifications: {:?}", e);
-                }
-            } else if hour == 18 {
-                if let Err(e) = dispatch_notifications(&bot, &pool, "18:00").await {
-                    error!("Error dispatching 18:00 notifications: {:?}", e);
-                }
+            let time_str = format!("{:02}:00", hour);
+            if let Err(e) = dispatch_notifications(&bot, &pool, &time_str).await {
+                error!("Error dispatching {} notifications: {:?}", time_str, e);
             }
         }
     }
@@ -67,11 +59,20 @@ async fn dispatch_notifications(bot: &Bot, pool: &SqlitePool, time: &str) -> Res
 
     for task in tasks {
         let chat_id = ChatId(task.chat_id);
-        let message = if time == "06:00" {
-            format!("📅 Today: {} collection.", task.waste_type)
-        } else {
-            format!("📅 Tomorrow: {} collection.", task.waste_type)
-        };
+
+        // Determine prefix and context
+        // If notify time is evening (>= 12:00), we assume it's "Tomorrow".
+        // If morning (< 12:00), it's "Today".
+        // This logic must match `get_users_to_notify` in store.rs
+        let is_evening = time >= "12:00";
+        let prefix = if is_evening { "Tomorrow" } else { "Today" };
+
+        let loc_label = task.location_alias.as_deref().unwrap_or(&task.location_id);
+
+        let message = format!(
+            "📅 {} at {}: {} collection.",
+            prefix, loc_label, task.waste_type
+        );
 
         if let Err(e) = bot.send_message(chat_id, message).await {
             error!("Failed to send notification to {}: {:?}", task.chat_id, e);
@@ -84,6 +85,8 @@ async fn dispatch_notifications(bot: &Bot, pool: &SqlitePool, time: &str) -> Res
                     "User {} blocked bot or is deactivated. Removing...",
                     task.chat_id
                 );
+                // We should delete all user data? Or just the specific subscription?
+                // Probably delete user entirely if they blocked the bot.
                 let _ = store::delete_user(pool, task.chat_id).await;
             }
         }
@@ -119,13 +122,12 @@ async fn ical_update_loop(pool: Arc<SqlitePool>) {
 async fn update_all_icals(pool: &SqlitePool) -> Result<()> {
     info!("Starting iCal update...");
 
-    // Get all unique location_ids from users
-    // We should probably optimize this to not fetch for every user if they share location
-    // But normalized DB has users separate.
-
-    let locations: Vec<String> = sqlx::query_scalar!("SELECT DISTINCT location_id FROM users")
-        .fetch_all(pool)
-        .await?;
+    // Get all unique location_ids from user_locations
+    // We need to join with user_locations now because location_id is there
+    let locations: Vec<String> =
+        sqlx::query_scalar!("SELECT DISTINCT location_id FROM user_locations")
+            .fetch_all(pool)
+            .await?;
 
     // Sentinel: Added timeout to prevent hanging if the external API is unresponsive.
     let client = reqwest::Client::builder()
@@ -138,14 +140,6 @@ async fn update_all_icals(pool: &SqlitePool) -> Result<()> {
     let start_date = now.format("%d.%m.%Y").to_string(); // Check API format!
     let end_date = (now + Duration::days(90)).format("%d.%m.%Y").to_string();
 
-    // Assuming API format is DD.MM.YYYY based on typical German formats, but URL param usually YYYY-MM-DD or similar.
-    // The prompt says "cardomap.idu.de...".
-    // Checking standard CardoMap iCal URLs usually involves `StandortID`, `DatumVon`, `DatumBis`.
-    // Or `startdate`, `enddate` as constructed in prompt description?
-    // Prompt says: `https://cardomap.idu.de/cardo3Apps/IDU_DD_Stadtplan/abfallkalender_ical.php?standortid=<LOC_ID>&startdate=<START>&enddate=<END>`
-    // I will stick to the prompt's implied parameter names.
-    // I need to be sure about date format. Usually `DD.MM.YYYY` in German APIs.
-
     for loc_id in locations {
         info!("Updating iCal for location: {}", loc_id);
 
@@ -155,7 +149,8 @@ async fn update_all_icals(pool: &SqlitePool) -> Result<()> {
             ("DATUM_BIS", end_date.as_str()),
         ];
 
-        let url = "https://stadtplan.dresden.de/project/cardo3Apps/IDU_DDStadtplan/abfall/ical.ashx";
+        let url =
+            "https://stadtplan.dresden.de/project/cardo3Apps/IDU_DDStadtplan/abfall/ical.ashx";
 
         match client.get(url).query(&params).send().await {
             Ok(resp) => {
