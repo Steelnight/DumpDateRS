@@ -141,7 +141,9 @@ mod tests {
         let start_date = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
 
         for i in 0..5000 {
-            let date = start_date.checked_add_signed(chrono::Duration::days(i)).unwrap();
+            let date = start_date
+                .checked_add_signed(chrono::Duration::days(i))
+                .unwrap();
             events.push(PickupEvent {
                 date,
                 waste_types: vec![WasteType::Bio],
@@ -154,10 +156,12 @@ mod tests {
 
         println!("Inserted 5000 events in {:?}", duration);
 
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM pickup_events WHERE location_id = 'LOC_LARGE'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pickup_events WHERE location_id = 'LOC_LARGE'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
         assert_eq!(count, 5000);
     }
