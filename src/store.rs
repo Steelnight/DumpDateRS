@@ -116,18 +116,15 @@ pub async fn upsert_events(
         }
     }
 
-    // Batch insert using QueryBuilder
-    // Optimization: Reduces database round-trips and transaction duration.
-    if !inserts.is_empty() {
-        // We chunk the inserts to be safe against SQLite variable limit (usually 999 or 32766)
-        // 500 items * 3 columns = 1500 variables, which is safe for modern SQLite.
-        // Just in case, we can process in chunks if we expect massive data, but for iCal it's usually small.
-        // We'll stick to a single batch for now as it's typically < 100 items.
+    // Batch insert using QueryBuilder with chunking
+    // Optimization: Reduces database round-trips while staying within SQLite variable limits.
+    // Chunk size of 250 means 750 variables per query (3 cols * 250 rows), well under the strict 999 limit.
 
+    for chunk in inserts.chunks(250) {
         let mut query_builder: QueryBuilder<Sqlite> =
             QueryBuilder::new("INSERT INTO pickup_events (location_id, date, waste_type) ");
 
-        query_builder.push_values(inserts, |mut b, (loc, date, waste)| {
+        query_builder.push_values(chunk, |mut b, (loc, date, waste)| {
             b.push_bind(loc).push_bind(date).push_bind(waste);
         });
 
