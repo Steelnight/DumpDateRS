@@ -6,6 +6,50 @@ use std::str::FromStr;
 
 pub type DbPool = SqlitePool;
 
+pub async fn create_schema(pool: &DbPool) -> Result<()> {
+    // Users table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY, -- Telegram Chat ID
+            location_id TEXT NOT NULL,
+            notify_time TEXT NOT NULL DEFAULT '18:00',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );",
+    )
+    .execute(pool)
+    .await
+    .context("Failed to create users table")?;
+
+    // Subscriptions table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS subscriptions (
+            user_id INTEGER NOT NULL,
+            waste_type TEXT NOT NULL,
+            PRIMARY KEY (user_id, waste_type),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );",
+    )
+    .execute(pool)
+    .await
+    .context("Failed to create subscriptions table")?;
+
+    // Pickup events table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS pickup_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            location_id TEXT NOT NULL,
+            date DATE NOT NULL,
+            waste_type TEXT NOT NULL,
+            UNIQUE(location_id, date, waste_type)
+        );",
+    )
+    .execute(pool)
+    .await
+    .context("Failed to create pickup_events table")?;
+
+    Ok(())
+}
+
 pub async fn init_db() -> Result<DbPool> {
     let database_url =
         env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:waste_bot.db".to_string());
@@ -29,10 +73,7 @@ pub async fn init_db() -> Result<DbPool> {
         .await
         .context("Failed to connect to database")?;
 
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .context("Failed to run migrations")?;
+    create_schema(&pool).await?;
 
     Ok(pool)
 }

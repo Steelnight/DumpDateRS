@@ -2,6 +2,7 @@
 mod tests {
     use super::super::store::*;
     use super::super::waste::{PickupEvent, WasteType};
+    use super::super::db::create_schema;
     use chrono::NaiveDate;
     use sqlx::sqlite::SqlitePoolOptions;
 
@@ -9,7 +10,7 @@ mod tests {
         let db_url = "sqlite::memory:";
         let pool = SqlitePoolOptions::new().connect(db_url).await.unwrap();
 
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        create_schema(&pool).await.unwrap();
 
         pool
     }
