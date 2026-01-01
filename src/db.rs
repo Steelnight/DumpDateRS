@@ -53,6 +53,12 @@ pub async fn create_schema(pool: &DbPool) -> Result<()> {
     .await
     .context("Failed to create pickup_events table")?;
 
+    // Index on pickup_events(date) for efficient daily notification queries
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_pickup_events_date ON pickup_events(date);")
+        .execute(pool)
+        .await
+        .context("Failed to create index on pickup_events(date)")?;
+
     Ok(())
 }
 
