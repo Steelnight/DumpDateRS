@@ -87,6 +87,10 @@ pub enum ParseError {
     MissingSummary,
 }
 
+pub fn is_valid_location_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 20 && id.chars().all(|c| c.is_alphanumeric())
+}
+
 pub fn normalize_waste_types(summary: &str) -> Vec<WasteType> {
     summary
         .split(',')
@@ -153,6 +157,21 @@ fn extract_event_data(event: IcalEvent) -> Result<(NaiveDate, String), ParseErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_location_id_validation() {
+        assert!(is_valid_location_id("12345"));
+        assert!(is_valid_location_id("LOC123"));
+        assert!(is_valid_location_id("AB12CD"));
+
+        // Invalid cases
+        assert!(!is_valid_location_id("")); // Empty
+        assert!(!is_valid_location_id("123 456")); // Space
+        assert!(!is_valid_location_id("LOC-123")); // Hyphen (assuming strict alphanumeric)
+        assert!(!is_valid_location_id("LOC/123")); // Slash
+        assert!(!is_valid_location_id("DROP TABLE")); // SQL-like
+        assert!(!is_valid_location_id("a".repeat(21).as_str())); // Too long
+    }
 
     #[test]
     fn test_normalize_waste_types() {

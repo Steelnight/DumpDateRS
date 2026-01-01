@@ -94,9 +94,12 @@ async fn receive_location_handler(
 ) -> HandlerResult {
     if let Some(text) = msg.text() {
         let location_id = text.trim();
-        if location_id.is_empty() {
-            bot.send_message(msg.chat.id, "Please enter a valid Location ID.")
-                .await?;
+        if !crate::waste::is_valid_location_id(location_id) {
+            bot.send_message(
+                msg.chat.id,
+                "Invalid Location ID. It must be alphanumeric and max 20 characters.",
+            )
+            .await?;
             return Ok(());
         }
 
