@@ -1,6 +1,6 @@
 use crate::waste::PickupEvent;
 use anyhow::Result;
-use sqlx::SqlitePool;
+use sqlx::{sqlite::Sqlite, QueryBuilder, SqlitePool};
 
 // User Operations
 pub async fn create_user(pool: &SqlitePool, chat_id: i64, location_id: &str) -> Result<()> {
@@ -86,14 +86,6 @@ pub async fn upsert_events(
     let mut tx = pool.begin().await?;
 
     // Strategy: Delete all FUTURE events for this location, then insert the new ones.
-    // This handles moved dates correctly. Past events should probably be left alone or cleaned up separately.
-    // However, if the feed contains past events, we might duplicate them if we don't delete them.
-    // Usually iCal feeds contain a window.
-    // Let's delete ALL events for this location to be safe and ensure sync,
-    // BUT only if we successfully insert the new ones (which the transaction ensures).
-    // Wait, if we delete past events, we lose history? Not critical for this bot.
-    // Let's safe-guard: Delete events >= today.
-
     let today = chrono::Local::now()
         .date_naive()
         .format("%Y-%m-%d")
@@ -107,28 +99,36 @@ pub async fn upsert_events(
     .execute(&mut *tx)
     .await?;
 
+    // Prepare data for batch insert
+    let mut inserts = Vec::new();
     for event in events {
-        // Only insert events that are >= today (or just insert everything from the feed?
-        // If the feed has old events and we didn't delete them, we might get duplicates if we didn't use ON CONFLICT)
-        // Since we only deleted >= today, we should probably only insert >= today to avoid conflict on old events
-        // OR we use INSERT OR REPLACE/IGNORE for the rest.
-
         let date_str = event.date.format("%Y-%m-%d").to_string();
         if date_str < today {
             continue;
         }
 
         for waste in &event.waste_types {
-            let waste_str = waste.as_str();
-            sqlx::query!(
-                "INSERT INTO pickup_events (location_id, date, waste_type) VALUES (?, ?, ?)",
-                location_id,
-                date_str,
-                waste_str
-            )
-            .execute(&mut *tx)
-            .await?;
+            inserts.push((
+                location_id.to_string(),
+                date_str.clone(),
+                waste.as_str().to_string(),
+            ));
         }
+    }
+
+    // Batch insert using QueryBuilder with chunking
+    // Optimization: Reduces database round-trips while staying within SQLite variable limits.
+    // Chunk size of 250 means 750 variables per query (3 cols * 250 rows), well under the strict 999 limit.
+
+    for chunk in inserts.chunks(250) {
+        let mut query_builder: QueryBuilder<Sqlite> =
+            QueryBuilder::new("INSERT INTO pickup_events (location_id, date, waste_type) ");
+
+        query_builder.push_values(chunk, |mut b, (loc, date, waste)| {
+            b.push_bind(loc).push_bind(date).push_bind(waste);
+        });
+
+        query_builder.build().execute(&mut *tx).await?;
     }
 
     tx.commit().await?;

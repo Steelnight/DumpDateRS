@@ -130,4 +130,35 @@ mod tests {
             .unwrap();
         assert_eq!(tasks.len(), 0);
     }
+
+    #[tokio::test]
+    async fn test_large_batch_insert() {
+        let pool = setup_db().await;
+        let mut events = Vec::new();
+
+        // Generate 5000 events
+        // Start date far in future to avoid filtering
+        let start_date = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
+
+        for i in 0..5000 {
+            let date = start_date.checked_add_signed(chrono::Duration::days(i)).unwrap();
+            events.push(PickupEvent {
+                date,
+                waste_types: vec![WasteType::Bio],
+            });
+        }
+
+        let start = std::time::Instant::now();
+        upsert_events(&pool, "LOC_LARGE", &events).await.unwrap();
+        let duration = start.elapsed();
+
+        println!("Inserted 5000 events in {:?}", duration);
+
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM pickup_events WHERE location_id = 'LOC_LARGE'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 5000);
+    }
 }
