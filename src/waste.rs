@@ -103,10 +103,11 @@ pub fn parse_ical(content: &str) -> Result<Vec<PickupEvent>, ParseError> {
     let mut events = Vec::new();
 
     for line in parser {
-        let calendar = line?;
+        let mut calendar = line?;
 
-        for event in calendar.events {
-            let (date, summary) = extract_event_data(&event)?;
+        // Optimization: consume events instead of iterating with reference
+        for event in std::mem::take(&mut calendar.events) {
+            let (date, summary) = extract_event_data(event)?;
             let waste_types = normalize_waste_types(&summary);
 
             events.push(PickupEvent { date, waste_types });
@@ -116,17 +117,19 @@ pub fn parse_ical(content: &str) -> Result<Vec<PickupEvent>, ParseError> {
     Ok(events)
 }
 
-fn extract_event_data(event: &IcalEvent) -> Result<(NaiveDate, String), ParseError> {
+fn extract_event_data(event: IcalEvent) -> Result<(NaiveDate, String), ParseError> {
     let mut date = None;
     let mut summary = None;
 
-    for prop in &event.properties {
+    // Optimization: consume properties to move strings instead of cloning
+    for prop in event.properties {
         match prop.name.as_str() {
             "DTSTART" => {
-                if let Some(val) = &prop.value {
+                if let Some(val) = prop.value {
                     // Handle YYYYMMDD
                     // Sometimes it might be longer or have timezone, but usually for city waste it's YYYYMMDD
-                    let val_clean = val.split('T').next().unwrap_or(val);
+                    // val is owned, but we need to split it.
+                    let val_clean = val.split('T').next().unwrap_or(&val);
                     date = Some(
                         NaiveDate::parse_from_str(val_clean, "%Y%m%d")
                             .map_err(|_| ParseError::InvalidDate(val.clone()))?,
@@ -134,7 +137,8 @@ fn extract_event_data(event: &IcalEvent) -> Result<(NaiveDate, String), ParseErr
                 }
             }
             "SUMMARY" => {
-                summary = prop.value.clone();
+                // Move the value instead of cloning
+                summary = prop.value;
             }
             _ => {}
         }
