@@ -99,8 +99,12 @@ pub async fn upsert_events(
     .execute(&mut *tx)
     .await?;
 
-    // Prepare data for batch insert
-    let mut inserts = Vec::new();
+    // Prepare data for batch insert with chunking to avoid large allocations
+    // Optimization: Reduces database round-trips while staying within SQLite variable limits.
+    // Chunk size of 250 means 750 variables per query (3 cols * 250 rows), well under the strict 999 limit.
+    // Using a fixed-size buffer reduces memory pressure compared to collecting all items first.
+    let mut buffer: Vec<(&str, String, &str)> = Vec::with_capacity(250);
+
     for event in events {
         let date_str = event.date.format("%Y-%m-%d").to_string();
         if date_str < today {
@@ -108,23 +112,27 @@ pub async fn upsert_events(
         }
 
         for waste in &event.waste_types {
-            inserts.push((
-                location_id.to_string(),
-                date_str.clone(),
-                waste.as_str().to_string(),
-            ));
+            buffer.push((location_id, date_str.clone(), waste.as_str()));
+
+            if buffer.len() >= 250 {
+                let mut query_builder: QueryBuilder<Sqlite> =
+                    QueryBuilder::new("INSERT INTO pickup_events (location_id, date, waste_type) ");
+
+                query_builder.push_values(&buffer, |mut b, (loc, date, waste)| {
+                    b.push_bind(loc).push_bind(date).push_bind(waste);
+                });
+
+                query_builder.build().execute(&mut *tx).await?;
+                buffer.clear();
+            }
         }
     }
 
-    // Batch insert using QueryBuilder with chunking
-    // Optimization: Reduces database round-trips while staying within SQLite variable limits.
-    // Chunk size of 250 means 750 variables per query (3 cols * 250 rows), well under the strict 999 limit.
-
-    for chunk in inserts.chunks(250) {
+    if !buffer.is_empty() {
         let mut query_builder: QueryBuilder<Sqlite> =
             QueryBuilder::new("INSERT INTO pickup_events (location_id, date, waste_type) ");
 
-        query_builder.push_values(chunk, |mut b, (loc, date, waste)| {
+        query_builder.push_values(&buffer, |mut b, (loc, date, waste)| {
             b.push_bind(loc).push_bind(date).push_bind(waste);
         });
 
