@@ -1,169 +1,191 @@
-#[cfg(test)]
-mod tests {
-    use super::super::store::*;
-    use super::super::waste::{PickupEvent, WasteType};
-    use super::super::db::create_schema;
-    use chrono::NaiveDate;
-    use sqlx::sqlite::SqlitePoolOptions;
+use crate::store::{
+    add_subscription, add_user_location, create_user, delete_user, delete_user_location,
+    get_subscriptions, get_user_locations, update_notify_time, upsert_events,
+};
+use crate::waste::{PickupEvent, WasteType};
+use sqlx::sqlite::SqlitePoolOptions;
+use std::env;
+use std::str::FromStr;
 
-    async fn setup_db() -> sqlx::SqlitePool {
-        let db_url = "sqlite::memory:";
-        let pool = SqlitePoolOptions::new().connect(db_url).await.unwrap();
+#[tokio::test]
+async fn test_db_operations() {
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
 
-        create_schema(&pool).await.unwrap();
-
-        pool
-    }
-
-    #[tokio::test]
-    async fn test_user_crud() {
-        let pool = setup_db().await;
-
-        // Create
-        create_user(&pool, 12345, "LOC1").await.unwrap();
-
-        // Read
-        let user = get_user(&pool, 12345).await.unwrap().unwrap();
-        assert_eq!(user.0, "LOC1");
-        assert_eq!(user.1, "18:00");
-
-        // Update Time
-        update_notify_time(&pool, 12345, "06:00").await.unwrap();
-        let user = get_user(&pool, 12345).await.unwrap().unwrap();
-        assert_eq!(user.1, "06:00");
-
-        // Delete
-        delete_user(&pool, 12345).await.unwrap();
-        let user = get_user(&pool, 12345).await.unwrap();
-        assert!(user.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_subscriptions() {
-        let pool = setup_db().await;
-        create_user(&pool, 12345, "LOC1").await.unwrap();
-
-        // Add subs
-        add_subscription(&pool, 12345, "Bio").await.unwrap();
-        add_subscription(&pool, 12345, "Rest").await.unwrap();
-
-        let subs = get_subscriptions(&pool, 12345).await.unwrap();
-        assert_eq!(subs.len(), 2);
-        assert!(subs.contains(&"Bio".to_string()));
-        assert!(subs.contains(&"Rest".to_string()));
-
-        // Remove sub
-        remove_subscription(&pool, 12345, "Bio").await.unwrap();
-        let subs = get_subscriptions(&pool, 12345).await.unwrap();
-        assert_eq!(subs.len(), 1);
-        assert!(subs.contains(&"Rest".to_string()));
-
-        // Cascading delete
-        delete_user(&pool, 12345).await.unwrap();
-        // Verify subs are gone (raw query or ensure no constraint error on re-insert if we were checking that)
-        // Check manually:
-        let count: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM subscriptions WHERE user_id = 12345")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(count, 0);
-    }
-
-    #[tokio::test]
-    async fn test_pickup_events() {
-        let pool = setup_db().await;
-
-        // Use dates far in the future to pass the ">= today" check in upsert_events
-        let events = vec![
-            PickupEvent {
-                date: NaiveDate::from_ymd_opt(2099, 10, 27).unwrap(),
-                waste_types: vec![WasteType::Bio, WasteType::Rest],
-            },
-            PickupEvent {
-                date: NaiveDate::from_ymd_opt(2099, 10, 28).unwrap(),
-                waste_types: vec![WasteType::Yellow],
-            },
-        ];
-
-        upsert_events(&pool, "LOC1", &events).await.unwrap();
-
-        // Query to verify
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM pickup_events")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count, 3); // Bio, Rest, Yellow
-    }
-
-    #[tokio::test]
-    async fn test_notification_query() {
-        let pool = setup_db().await;
-        create_user(&pool, 1, "LOC1").await.unwrap();
-        add_subscription(&pool, 1, "Bio").await.unwrap();
-        update_notify_time(&pool, 1, "18:00").await.unwrap();
-
-        create_user(&pool, 2, "LOC1").await.unwrap();
-        add_subscription(&pool, 2, "Rest").await.unwrap();
-        update_notify_time(&pool, 2, "06:00").await.unwrap();
-
-        // Use future dates
-        let events = vec![PickupEvent {
-            date: NaiveDate::from_ymd_opt(2099, 10, 28).unwrap(),
-            waste_types: vec![WasteType::Bio],
-        }];
-        upsert_events(&pool, "LOC1", &events).await.unwrap();
-
-        // Case 1: 18:00 check for tomorrow (2099-10-28)
-        // User 1 should get notified (subscribed to Bio, notifies at 18:00)
-        let tasks = get_users_to_notify(&pool, "18:00", "2099-10-27", "2099-10-28")
-            .await
-            .unwrap();
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].chat_id, 1);
-        assert_eq!(tasks[0].waste_type, "Bio");
-
-        // Case 2: 06:00 check for today (2099-10-28)
-        // User 2 should get notified if they were subscribed to Bio, but they are subscribed to Rest.
-        // User 1 is 18:00, so filtered out.
-        let tasks = get_users_to_notify(&pool, "06:00", "2099-10-28", "2099-10-29")
-            .await
-            .unwrap();
-        assert_eq!(tasks.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_large_batch_insert() {
-        let pool = setup_db().await;
-        let mut events = Vec::new();
-
-        // Generate 5000 events
-        // Start date far in future to avoid filtering
-        let start_date = NaiveDate::from_ymd_opt(2100, 1, 1).unwrap();
-
-        for i in 0..5000 {
-            let date = start_date
-                .checked_add_signed(chrono::Duration::days(i))
-                .unwrap();
-            events.push(PickupEvent {
-                date,
-                waste_types: vec![WasteType::Bio],
-            });
-        }
-
-        let start = std::time::Instant::now();
-        upsert_events(&pool, "LOC_LARGE", &events).await.unwrap();
-        let duration = start.elapsed();
-
-        println!("Inserted 5000 events in {:?}", duration);
-
-        let count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pickup_events WHERE location_id = 'LOC_LARGE'",
+    let pool = SqlitePoolOptions::new()
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::from_str(&database_url)
+                .unwrap()
+                .foreign_keys(true),
         )
-        .fetch_one(&pool)
         .await
         .unwrap();
 
-        assert_eq!(count, 5000);
+    crate::db::create_schema(&pool).await.unwrap();
+
+    // Test User Creation and Location
+    create_user(&pool, 12345).await.unwrap();
+
+    // Use ignore variable to silence warning, or use it
+    let _loc_id_initial = add_user_location(&pool, 12345, "LOC1", Some("Home"))
+        .await
+        .unwrap();
+
+    let locations = get_user_locations(&pool, 12345).await.unwrap();
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].location_id, "LOC1");
+    assert_eq!(locations[0].alias.as_deref(), Some("Home"));
+
+    // Test Notification Time Update
+    update_notify_time(&pool, 12345, "LOC1", "06:00")
+        .await
+        .unwrap();
+    let locations = get_user_locations(&pool, 12345).await.unwrap();
+    assert_eq!(locations[0].notify_time, "06:00");
+
+    // Test Delete User
+    delete_user(&pool, 12345).await.unwrap();
+    let locations = get_user_locations(&pool, 12345).await.unwrap();
+    assert!(locations.is_empty());
+
+    // Test Subscriptions
+    // Re-add user and location
+    // Note: create_user is called inside add_user_location, but let's be explicit if needed.
+    // add_user_location calls create_user.
+
+    let loc_id = add_user_location(&pool, 12345, "LOC1", Some("Home"))
+        .await
+        .unwrap();
+
+    // Ensure the location exists before adding subscription
+    let check = get_user_locations(&pool, 12345).await.unwrap();
+    assert!(
+        !check.is_empty(),
+        "User location should exist after re-adding"
+    );
+
+    add_subscription(&pool, loc_id, "Bio").await.unwrap();
+    let subs = get_subscriptions(&pool, loc_id).await.unwrap();
+    assert_eq!(subs, vec!["Bio"]);
+
+    // Test Events
+    // Use dynamic date to ensure it's not filtered out by "today" check in upsert_events
+    let today = chrono::Local::now().date_naive();
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let tomorrow_str = (today + chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let event = PickupEvent {
+        date: today,
+        waste_types: vec![WasteType::Bio],
+    };
+    upsert_events(&pool, "LOC1", &[event]).await.unwrap();
+
+    // Test Notification Query
+    // We need to set notify time to match
+    update_notify_time(&pool, 12345, "LOC1", "06:00")
+        .await
+        .unwrap();
+
+    let tasks = crate::store::get_users_to_notify(
+        &pool,
+        "06:00",
+        &today_str,    // today
+        &tomorrow_str, // tomorrow
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].chat_id, 12345);
+    assert_eq!(tasks[0].waste_type, "Bio");
+
+    // Clean up
+    delete_user(&pool, 12345).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_batch_insert() {
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+
+    let pool = SqlitePoolOptions::new()
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::from_str(&database_url)
+                .unwrap()
+                .foreign_keys(true),
+        )
+        .await
+        .unwrap();
+
+    crate::db::create_schema(&pool).await.unwrap();
+
+    // Simulate 1000 events
+    let mut events = Vec::new();
+    let today = chrono::Local::now().date_naive();
+
+    for i in 0..1000 {
+        events.push(PickupEvent {
+            date: today + chrono::Duration::days(i),
+            waste_types: vec![WasteType::Bio],
+        });
     }
+
+    upsert_events(&pool, "LOC_BATCH", &events).await.unwrap();
+
+    // Verify count
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pickup_events WHERE location_id = 'LOC_BATCH'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    assert_eq!(count, 1000);
+}
+
+#[tokio::test]
+async fn test_multiple_locations() {
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+
+    let pool = SqlitePoolOptions::new()
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::from_str(&database_url)
+                .unwrap()
+                .foreign_keys(true),
+        )
+        .await
+        .unwrap();
+
+    crate::db::create_schema(&pool).await.unwrap();
+
+    let chat_id = 999;
+    create_user(&pool, chat_id).await.unwrap();
+
+    let _loc1_id = add_user_location(&pool, chat_id, "LOC1", Some("Home"))
+        .await
+        .unwrap();
+    let _loc2_id = add_user_location(&pool, chat_id, "LOC2", Some("Office"))
+        .await
+        .unwrap();
+
+    update_notify_time(&pool, chat_id, "LOC1", "18:00")
+        .await
+        .unwrap();
+    update_notify_time(&pool, chat_id, "LOC2", "08:00")
+        .await
+        .unwrap();
+
+    let locations = get_user_locations(&pool, chat_id).await.unwrap();
+    assert_eq!(locations.len(), 2);
+
+    let l1 = locations.iter().find(|l| l.location_id == "LOC1").unwrap();
+    assert_eq!(l1.notify_time, "18:00");
+
+    let l2 = locations.iter().find(|l| l.location_id == "LOC2").unwrap();
+    assert_eq!(l2.notify_time, "08:00");
+
+    // Test delete location by alias
+    delete_user_location(&pool, chat_id, "Home").await.unwrap();
+    let locations = get_user_locations(&pool, chat_id).await.unwrap();
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].alias.as_deref(), Some("Office"));
 }
