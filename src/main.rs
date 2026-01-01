@@ -9,8 +9,9 @@ mod waste;
 use bot_handler::run_bot;
 use db::init_db;
 use dotenvy::dotenv;
-use log::info;
+use log::{error, info};
 use scheduler::run_scheduler;
+use std::env;
 use std::error::Error;
 use teloxide::prelude::*;
 
@@ -24,7 +25,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let pool = init_db().await?;
     info!("Database initialized and migrations run.");
 
-    let bot = Bot::from_env();
+    // Replace Bot::from_env() to avoid unwrap/panic
+    let token = env::var("TELOXIDE_TOKEN").map_err(|_| {
+        error!("TELOXIDE_TOKEN environment variable is not set");
+        "TELOXIDE_TOKEN environment variable is not set"
+    })?;
+
+    let bot = Bot::new(token);
 
     // Start Scheduler
     let bot_clone = bot.clone();
