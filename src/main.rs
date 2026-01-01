@@ -1,18 +1,18 @@
-mod db;
-mod waste;
-mod store;
 mod bot_handler;
-mod scheduler;
+mod db;
 #[cfg(test)]
 mod db_tests;
+mod scheduler;
+mod store;
+mod waste;
 
+use bot_handler::run_bot;
 use db::init_db;
-use teloxide::prelude::*;
 use dotenvy::dotenv;
 use log::info;
-use std::error::Error;
-use bot_handler::run_bot;
 use scheduler::run_scheduler;
+use std::error::Error;
+use teloxide::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

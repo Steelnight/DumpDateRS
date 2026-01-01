@@ -1,6 +1,6 @@
-use sqlx::SqlitePool;
-use anyhow::Result;
 use crate::waste::PickupEvent;
+use anyhow::Result;
+use sqlx::SqlitePool;
 
 // User Operations
 pub async fn create_user(pool: &SqlitePool, chat_id: i64, location_id: &str) -> Result<()> {
@@ -33,9 +33,13 @@ pub async fn delete_user(pool: &SqlitePool, chat_id: i64) -> Result<()> {
 }
 
 pub async fn update_notify_time(pool: &SqlitePool, chat_id: i64, time: &str) -> Result<()> {
-    sqlx::query!("UPDATE users SET notify_time = ? WHERE id = ?", time, chat_id)
-        .execute(pool)
-        .await?;
+    sqlx::query!(
+        "UPDATE users SET notify_time = ? WHERE id = ?",
+        time,
+        chat_id
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -74,7 +78,11 @@ pub async fn get_subscriptions(pool: &SqlitePool, chat_id: i64) -> Result<Vec<St
 }
 
 // Event Operations
-pub async fn upsert_events(pool: &SqlitePool, location_id: &str, events: &[PickupEvent]) -> Result<()> {
+pub async fn upsert_events(
+    pool: &SqlitePool,
+    location_id: &str,
+    events: &[PickupEvent],
+) -> Result<()> {
     let mut tx = pool.begin().await?;
 
     // Strategy: Delete all FUTURE events for this location, then insert the new ones.
@@ -86,7 +94,10 @@ pub async fn upsert_events(pool: &SqlitePool, location_id: &str, events: &[Picku
     // Wait, if we delete past events, we lose history? Not critical for this bot.
     // Let's safe-guard: Delete events >= today.
 
-    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
 
     sqlx::query!(
         "DELETE FROM pickup_events WHERE location_id = ? AND date >= ?",
@@ -125,14 +136,17 @@ pub async fn upsert_events(pool: &SqlitePool, location_id: &str, events: &[Picku
 }
 
 // Query for notifications
-#[allow(dead_code)]
 pub struct NotificationTask {
     pub chat_id: i64,
     pub waste_type: String,
-    pub event_date: String,
 }
 
-pub async fn get_users_to_notify(pool: &SqlitePool, check_time: &str, current_date: &str, next_date: &str) -> Result<Vec<NotificationTask>> {
+pub async fn get_users_to_notify(
+    pool: &SqlitePool,
+    check_time: &str,
+    current_date: &str,
+    next_date: &str,
+) -> Result<Vec<NotificationTask>> {
     // check_time is '06:00' or '18:00'
     // If '06:00', we notify for events TODAY (current_date)
     // If '18:00', we notify for events TOMORROW (next_date)
@@ -142,11 +156,15 @@ pub async fn get_users_to_notify(pool: &SqlitePool, check_time: &str, current_da
     // Join subscriptions
     // Join pickup_events matching location_id and waste_type and date
 
-    let target_date = if check_time == "06:00" { current_date } else { next_date };
+    let target_date = if check_time == "06:00" {
+        current_date
+    } else {
+        next_date
+    };
 
     let rows = sqlx::query!(
         r#"
-        SELECT u.id as chat_id, s.waste_type, e.date as event_date
+        SELECT u.id as chat_id, s.waste_type
         FROM users u
         JOIN subscriptions s ON u.id = s.user_id
         JOIN pickup_events e ON u.location_id = e.location_id AND s.waste_type = e.waste_type
@@ -158,9 +176,11 @@ pub async fn get_users_to_notify(pool: &SqlitePool, check_time: &str, current_da
     .fetch_all(pool)
     .await?;
 
-    Ok(rows.into_iter().map(|r| NotificationTask {
-        chat_id: r.chat_id.unwrap_or(0),
-        waste_type: r.waste_type,
-        event_date: r.event_date.to_string(), // chrono::NaiveDate via sqlx might need conversion if mapped
-    }).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| NotificationTask {
+            chat_id: r.chat_id.unwrap_or(0),
+            waste_type: r.waste_type,
+        })
+        .collect())
 }

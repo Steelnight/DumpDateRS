@@ -1,8 +1,8 @@
-use std::str::FromStr;
 use chrono::NaiveDate;
 use ical::parser::ical::component::IcalEvent;
 use ical::IcalParser;
 use std::io::BufReader;
+use std::str::FromStr;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -25,6 +25,25 @@ impl WasteType {
             WasteType::ChristmasTree => "Weihnachtsbaum",
             WasteType::Other(s) => s.as_str(),
         }
+    }
+
+    pub fn supported_types() -> Vec<WasteType> {
+        vec![
+            WasteType::Bio,
+            WasteType::Rest,
+            WasteType::Paper,
+            WasteType::Yellow,
+            WasteType::ChristmasTree,
+        ]
+    }
+
+    pub fn default_subscriptions() -> Vec<WasteType> {
+        vec![
+            WasteType::Bio,
+            WasteType::Rest,
+            WasteType::Paper,
+            WasteType::Yellow,
+        ]
     }
 }
 
@@ -73,7 +92,7 @@ pub fn normalize_waste_types(summary: &str) -> Vec<WasteType> {
         .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| s.parse().unwrap()) // Infallible
+        .map(|s| s.parse().expect("WasteType parsing is infallible"))
         .collect()
 }
 
@@ -90,10 +109,7 @@ pub fn parse_ical(content: &str) -> Result<Vec<PickupEvent>, ParseError> {
             let (date, summary) = extract_event_data(&event)?;
             let waste_types = normalize_waste_types(&summary);
 
-            events.push(PickupEvent {
-                date,
-                waste_types,
-            });
+            events.push(PickupEvent { date, waste_types });
         }
     }
 
@@ -111,8 +127,10 @@ fn extract_event_data(event: &IcalEvent) -> Result<(NaiveDate, String), ParseErr
                     // Handle YYYYMMDD
                     // Sometimes it might be longer or have timezone, but usually for city waste it's YYYYMMDD
                     let val_clean = val.split('T').next().unwrap_or(val);
-                    date = Some(NaiveDate::parse_from_str(val_clean, "%Y%m%d")
-                        .map_err(|_| ParseError::InvalidDate(val.clone()))?);
+                    date = Some(
+                        NaiveDate::parse_from_str(val_clean, "%Y%m%d")
+                            .map_err(|_| ParseError::InvalidDate(val.clone()))?,
+                    );
                 }
             }
             "SUMMARY" => {
@@ -144,7 +162,10 @@ mod tests {
 
         let input = "Rest, Bio, Blaue Tonne";
         let output = normalize_waste_types(input);
-        assert_eq!(output, vec![WasteType::Rest, WasteType::Bio, WasteType::Paper]);
+        assert_eq!(
+            output,
+            vec![WasteType::Rest, WasteType::Bio, WasteType::Paper]
+        );
 
         let input = "";
         let output = normalize_waste_types(input);
@@ -175,9 +196,15 @@ END:VCALENDAR";
 
         let events = parse_ical(ical_content).unwrap();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].date, NaiveDate::from_ymd_opt(2023, 10, 27).unwrap());
+        assert_eq!(
+            events[0].date,
+            NaiveDate::from_ymd_opt(2023, 10, 27).unwrap()
+        );
         assert_eq!(events[0].waste_types, vec![WasteType::Bio, WasteType::Rest]);
-        assert_eq!(events[1].date, NaiveDate::from_ymd_opt(2023, 10, 28).unwrap());
+        assert_eq!(
+            events[1].date,
+            NaiveDate::from_ymd_opt(2023, 10, 28).unwrap()
+        );
         assert_eq!(events[1].waste_types, vec![WasteType::Yellow]);
     }
 }
