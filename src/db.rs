@@ -74,6 +74,14 @@ pub async fn create_schema(pool: &DbPool) -> Result<()> {
     .await
     .context("Failed to create index on user_locations(user_id)")?;
 
+    // Index on notify_time for faster hourly notifications
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_user_locations_notify_time ON user_locations(notify_time);",
+    )
+    .execute(pool)
+    .await
+    .context("Failed to create index on user_locations(notify_time)")?;
+
     // Subscriptions table (now linked to user_locations)
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS subscriptions (

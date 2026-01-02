@@ -253,7 +253,7 @@ pub async fn get_users_to_notify(
 
     let rows = sqlx::query!(
         r#"
-        SELECT u.id as chat_id, s.waste_type, ul.alias, ul.location_id, ul.notify_offset
+        SELECT u.id as "chat_id!", s.waste_type, ul.alias, ul.location_id, ul.notify_offset
         FROM users u
         JOIN user_locations ul ON u.id = ul.user_id
         JOIN subscriptions s ON ul.id = s.user_location_id
