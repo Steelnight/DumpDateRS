@@ -1,50 +1,97 @@
 use crate::store;
 use crate::waste::parse_ical;
 use anyhow::Result;
-use chrono::{Duration, Local, Timelike};
+use chrono::{Datelike, Duration, Local, Timelike};
 use log::{error, info};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use teloxide::prelude::*;
+use tokio_cron_scheduler::{Job, JobScheduler};
 
 // Constants
-const ICAL_UPDATE_INTERVAL_DAYS: i64 = 28; // Every 4 weeks
+// const ICAL_UPDATE_INTERVAL_DAYS: i64 = 28; // Every 4 weeks
 
 pub async fn run_scheduler(bot: Bot, pool: SqlitePool) {
     let pool = Arc::new(pool);
+    // Handle error instead of unwrap
+    let sched = match JobScheduler::new().await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to create JobScheduler: {:?}", e);
+            return;
+        }
+    };
 
     // Spawn Notification Task
+    // Schedule: Every hour at minute 0: "0 0 * * * *"
+    // This cron expression might depend on the crate's parser.
+    // tokio-cron-scheduler uses `cron` crate.
+    // sec, min, hour, day of month, month, day of week, year (optional)
     let bot_clone = bot.clone();
     let pool_clone = pool.clone();
-    tokio::spawn(async move {
-        notification_loop(bot_clone, pool_clone).await;
-    });
 
-    // Spawn iCal Update Task
-    let pool_clone = pool.clone();
-    tokio::spawn(async move {
-        ical_update_loop(pool_clone).await;
-    });
-}
-
-async fn notification_loop(bot: Bot, pool: Arc<SqlitePool>) {
-    // Align to the next minute
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
-
-    loop {
-        interval.tick().await;
-        let now = Local::now();
-        let hour = now.hour();
-        let minute = now.minute();
-
-        // Check every hour at minute 0
-        if minute == 0 {
+    // Notifications run every hour
+    let notification_job = Job::new_async("0 0 * * * *", move |_uuid, _l| {
+        let bot = bot_clone.clone();
+        let pool = pool_clone.clone();
+        Box::pin(async move {
+            let now = Local::now();
+            let hour = now.hour();
             let time_str = format!("{:02}:00", hour);
             if let Err(e) = dispatch_notifications(&bot, &pool, &time_str).await {
                 error!("Error dispatching {} notifications: {:?}", time_str, e);
             }
+        })
+    }).expect("Failed to create notification job");
+
+    sched.add(notification_job).await.expect("Failed to add notification job");
+
+    // Spawn iCal Update Task
+    // Run once a month on the first Saturday at 4 AM.
+    // Cron: "0 0 4 * * Sat" (Every Saturday at 4 AM)
+    // Check inside: if day of month <= 7.
+    let pool_clone_ical = pool.clone();
+    let ical_job = Job::new_async("0 0 4 * * Sat", move |_uuid, _l| {
+        let pool = pool_clone_ical.clone();
+        Box::pin(async move {
+            let now = Local::now();
+            if now.day() > 7 {
+                return;
+            }
+            if let Err(e) = update_all_icals(&pool).await {
+                error!("Error updating iCals: {:?}", e);
+            }
+        })
+    }).expect("Failed to create iCal job");
+
+    sched.add(ical_job).await.expect("Failed to add iCal job");
+
+    // Run iCal update immediately on startup (asynchronously)
+    let pool_clone_startup = pool.clone();
+    tokio::spawn(async move {
+         if let Err(e) = update_all_icals(&pool_clone_startup).await {
+            error!("Error performing startup iCal update: {:?}", e);
         }
+    });
+
+    if let Err(e) = sched.start().await {
+        error!("Error starting scheduler: {:?}", e);
     }
+
+    // Keep the scheduler running. The main loop in main.rs keeps the process alive,
+    // but run_scheduler was previously spawned and expected to run forever.
+    // Since sched.start() runs in background, we need to wait here or let the task finish
+    // but the scheduler lives in `sched`.
+    // Actually, `sched` will be dropped if we exit this function unless we keep it alive.
+    // But `JobScheduler` spawns tasks.
+    // However, the `sched` struct itself might need to be held?
+    // Looking at docs: "The scheduler must be kept alive".
+
+    // So we will just park here.
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        error!("Error waiting for ctrl_c: {:?}", e);
+    }
+    info!("Scheduler stopping...");
 }
 
 async fn dispatch_notifications(bot: &Bot, pool: &SqlitePool, time: &str) -> Result<()> {
@@ -60,12 +107,10 @@ async fn dispatch_notifications(bot: &Bot, pool: &SqlitePool, time: &str) -> Res
     for task in tasks {
         let chat_id = ChatId(task.chat_id);
 
-        // Determine prefix and context
-        // If notify time is evening (>= 12:00), we assume it's "Tomorrow".
-        // If morning (< 12:00), it's "Today".
-        // This logic must match `get_users_to_notify` in store.rs
-        let is_evening = time >= "12:00";
-        let prefix = if is_evening { "Tomorrow" } else { "Today" };
+        // Determine prefix based on notify_offset
+        // offset 1 = Day Before ("Tomorrow")
+        // offset 0 = Same Day ("Today")
+        let prefix = if task.notify_offset == 1 { "Tomorrow" } else { "Today" };
 
         let loc_label = task.location_alias.as_deref().unwrap_or(&task.location_id);
 
@@ -93,30 +138,6 @@ async fn dispatch_notifications(bot: &Bot, pool: &SqlitePool, time: &str) -> Res
     }
 
     Ok(())
-}
-
-async fn ical_update_loop(pool: Arc<SqlitePool>) {
-    // Run immediately on start
-
-    loop {
-        match update_all_icals(&pool).await {
-            Ok(_) => {
-                info!(
-                    "iCal update completed successfully. Sleeping for {} days.",
-                    ICAL_UPDATE_INTERVAL_DAYS
-                );
-                tokio::time::sleep(tokio::time::Duration::from_secs(
-                    ICAL_UPDATE_INTERVAL_DAYS as u64 * 24 * 60 * 60,
-                ))
-                .await;
-            }
-            Err(e) => {
-                error!("Error updating iCals: {:?}. Retrying in 1 hour.", e);
-                // Retry logic: sleep for 1 hour then try again, instead of waiting 28 days.
-                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
-            }
-        }
-    }
 }
 
 async fn update_all_icals(pool: &SqlitePool) -> Result<()> {

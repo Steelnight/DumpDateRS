@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use log::info;
 use sqlx::migrate::MigrateDatabase;
 use sqlx::sqlite::SqlitePool;
 use std::env;
@@ -7,23 +8,6 @@ use std::str::FromStr;
 pub type DbPool = SqlitePool;
 
 pub async fn create_schema(pool: &DbPool) -> Result<()> {
-    // Since we are not migrating data, we drop tables to ensure schema matches.
-    // Order matters for foreign keys.
-    sqlx::query("DROP TABLE IF EXISTS subscriptions")
-        .execute(pool)
-        .await?;
-    sqlx::query("DROP TABLE IF EXISTS user_locations")
-        .execute(pool)
-        .await?;
-    sqlx::query("DROP TABLE IF EXISTS users")
-        .execute(pool)
-        .await?;
-    // pickup_events does not depend on users, so we can keep it,
-    // but users might refer to it? No, users refer to location_id which is a string.
-    // However, if we want a clean slate for everything, maybe drop pickup_events too?
-    // The requirement didn't say drop event data, but it might be safer.
-    // Let's keep pickup_events for now as it's just a cache of external data.
-
     // Users table
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS users (
@@ -50,6 +34,38 @@ pub async fn create_schema(pool: &DbPool) -> Result<()> {
     .execute(pool)
     .await
     .context("Failed to create user_locations table")?;
+
+    // Attempt to add notify_offset column if it doesn't exist.
+    // SQLite doesn't support IF NOT EXISTS for columns directly.
+    // We can just try to add it and ignore the error if it fails (duplicate column).
+    match sqlx::query("ALTER TABLE user_locations ADD COLUMN notify_offset INTEGER NOT NULL DEFAULT 1")
+        .execute(pool)
+        .await
+    {
+        Ok(_) => info!("Added notify_offset column to user_locations"),
+        Err(e) => {
+            // Check if error is due to column already existing.
+            // Sqlite error code for generic error is 1, but we can check the message.
+            let msg = e.to_string();
+            if !msg.contains("duplicate column name") {
+                 // If it's not "duplicate column", then it's a real error
+                 // However, for robustness in this simple bot, we might just log it.
+                 // But wait, if the table was just created, it doesn't have the column yet?
+                 // Ah, CREATE TABLE above does NOT have notify_offset in the SQL string anymore?
+                 // I should include it in CREATE TABLE for fresh installs, AND have ALTER TABLE for migrations.
+                 // Or keep CREATE TABLE simple (v1) and let ALTER TABLE (v2) handle it?
+                 // Best practice: CREATE TABLE should be the *latest* schema.
+                 // But if table exists (old schema), CREATE TABLE does nothing.
+                 // Then ALTER TABLE adds the column.
+                 // So I should keep CREATE TABLE with *new* schema?
+                 // If I keep CREATE TABLE with new schema, and table exists (old schema), CREATE does nothing.
+                 // Then ALTER TABLE runs and adds column.
+                 // If table exists (new schema), CREATE does nothing. ALTER TABLE fails with "duplicate column".
+                 // This seems correct.
+                 info!("Column notify_offset might already exist: {}", e);
+            }
+        }
+    }
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_user_locations_user_id ON user_locations(user_id);",

@@ -29,6 +29,8 @@ pub async fn add_user_location(
     // Ensure user exists first
     create_user(pool, chat_id).await?;
 
+    // notify_offset default to 1 (Day Before) as per schema, but here we can be explicit or rely on default.
+    // relying on DB default.
     let id = sqlx::query!(
         "INSERT INTO user_locations (user_id, location_id, alias) VALUES (?, ?, ?)
          ON CONFLICT(user_id, location_id) DO UPDATE SET alias = excluded.alias
@@ -48,12 +50,13 @@ pub struct UserLocation {
     pub id: i64,
     pub location_id: String,
     pub notify_time: String,
+    pub notify_offset: i64,
     pub alias: Option<String>,
 }
 
 pub async fn get_user_locations(pool: &SqlitePool, chat_id: i64) -> Result<Vec<UserLocation>> {
     let rows = sqlx::query!(
-        "SELECT id, location_id, notify_time, alias FROM user_locations WHERE user_id = ?",
+        "SELECT id, location_id, notify_time, notify_offset, alias FROM user_locations WHERE user_id = ?",
         chat_id
     )
     .fetch_all(pool)
@@ -65,6 +68,7 @@ pub async fn get_user_locations(pool: &SqlitePool, chat_id: i64) -> Result<Vec<U
             id: r.id.expect("id should be present"),
             location_id: r.location_id,
             notify_time: r.notify_time,
+            notify_offset: r.notify_offset,
             alias: r.alias,
         })
         .collect())
@@ -97,6 +101,24 @@ pub async fn update_notify_time(
     let result = sqlx::query!(
         "UPDATE user_locations SET notify_time = ? WHERE user_id = ? AND (alias = ? OR location_id = ?)",
         time,
+        chat_id,
+        location_alias_or_id,
+        location_alias_or_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn update_notify_offset(
+    pool: &SqlitePool,
+    chat_id: i64,
+    location_alias_or_id: &str,
+    offset: i64,
+) -> Result<bool> {
+    let result = sqlx::query!(
+        "UPDATE user_locations SET notify_offset = ? WHERE user_id = ? AND (alias = ? OR location_id = ?)",
+        offset,
         chat_id,
         location_alias_or_id,
         location_alias_or_id
@@ -215,6 +237,7 @@ pub struct NotificationTask {
     pub waste_type: String,
     pub location_alias: Option<String>,
     pub location_id: String,
+    pub notify_offset: i64,
 }
 
 pub async fn get_users_to_notify(
@@ -224,24 +247,26 @@ pub async fn get_users_to_notify(
     next_date: &str,
 ) -> Result<Vec<NotificationTask>> {
     // Logic:
-    // 1. Find all user_locations where notify_time == check_time
-    // 2. For each, determine if we are checking today or tomorrow.
-    //    If notify_time >= "12:00", check next_date. Else check current_date.
-
-    let is_evening = check_time >= "12:00";
-    let target_date = if is_evening { next_date } else { current_date };
+    // Query users with matching notify_time.
+    // AND check events:
+    // (notify_offset = 0 AND date = current_date) OR (notify_offset = 1 AND date = next_date)
 
     let rows = sqlx::query!(
         r#"
-        SELECT u.id as chat_id, s.waste_type, ul.alias, ul.location_id
+        SELECT u.id as chat_id, s.waste_type, ul.alias, ul.location_id, ul.notify_offset
         FROM users u
         JOIN user_locations ul ON u.id = ul.user_id
         JOIN subscriptions s ON ul.id = s.user_location_id
         JOIN pickup_events e ON ul.location_id = e.location_id AND s.waste_type = e.waste_type
-        WHERE ul.notify_time = ? AND e.date = ?
+        WHERE ul.notify_time = ?
+          AND (
+               (ul.notify_offset = 0 AND e.date = ?)
+            OR (ul.notify_offset = 1 AND e.date = ?)
+          )
         "#,
         check_time,
-        target_date
+        current_date,
+        next_date
     )
     .fetch_all(pool)
     .await?;
@@ -249,10 +274,11 @@ pub async fn get_users_to_notify(
     Ok(rows
         .into_iter()
         .map(|r| NotificationTask {
-            chat_id: r.chat_id.unwrap_or(0),
+            chat_id: r.chat_id,
             waste_type: r.waste_type,
             location_alias: r.alias,
             location_id: r.location_id,
+            notify_offset: r.notify_offset,
         })
         .collect())
 }

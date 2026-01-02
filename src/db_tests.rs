@@ -86,6 +86,10 @@ async fn test_db_operations() {
     update_notify_time(&pool, 12345, "LOC1", "06:00")
         .await
         .unwrap();
+    // Also update offset to 0 (Same Day) since we are testing "today"
+    crate::store::update_notify_offset(&pool, 12345, "LOC1", 0)
+        .await
+        .unwrap();
 
     let tasks = crate::store::get_users_to_notify(
         &pool,
