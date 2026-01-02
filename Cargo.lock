@@ -419,6 +419,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "env_logger",
+ "futures",
  "ical",
  "log",
  "reqwest 0.12.28",

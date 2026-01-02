@@ -2,6 +2,7 @@ use crate::store;
 use crate::waste::parse_ical;
 use anyhow::Result;
 use chrono::{Datelike, Duration, Local, Timelike};
+use futures::stream::StreamExt;
 use log::{error, info};
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -104,38 +105,50 @@ async fn dispatch_notifications(bot: &Bot, pool: &SqlitePool, time: &str) -> Res
 
     let tasks = store::get_users_to_notify(pool, time, &today_str, &tomorrow_str).await?;
 
-    for task in tasks {
-        let chat_id = ChatId(task.chat_id);
+    // Optimization: Send notifications in parallel with a concurrency limit.
+    // This prevents one slow request from blocking others and speeds up the overall process.
+    // Using buffer_unordered with a limit (e.g., 50) allows processing multiple users at once.
+    futures::stream::iter(tasks)
+        .for_each_concurrent(50, |task| async move {
+            let chat_id = ChatId(task.chat_id);
 
-        // Determine prefix based on notify_offset
-        // offset 1 = Day Before ("Tomorrow")
-        // offset 0 = Same Day ("Today")
-        let prefix = if task.notify_offset == 1 { "Tomorrow" } else { "Today" };
+            // Determine prefix based on notify_offset
+            // offset 1 = Day Before ("Tomorrow")
+            // offset 0 = Same Day ("Today")
+            let prefix = if task.notify_offset == 1 {
+                "Tomorrow"
+            } else {
+                "Today"
+            };
 
-        let loc_label = task.location_alias.as_deref().unwrap_or(&task.location_id);
+            let loc_label = task
+                .location_alias
+                .as_deref()
+                .unwrap_or(&task.location_id);
 
-        let message = format!(
-            "📅 {} at {}: {} collection.",
-            prefix, loc_label, task.waste_type
-        );
+            let message = format!(
+                "📅 {} at {}: {} collection.",
+                prefix, loc_label, task.waste_type
+            );
 
-        if let Err(e) = bot.send_message(chat_id, message).await {
-            error!("Failed to send notification to {}: {:?}", task.chat_id, e);
-            // Handle block/deactivated
-            if let teloxide::RequestError::Api(
-                teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated,
-            ) = &e
-            {
-                info!(
-                    "User {} blocked bot or is deactivated. Removing...",
-                    task.chat_id
-                );
-                // We should delete all user data? Or just the specific subscription?
-                // Probably delete user entirely if they blocked the bot.
-                let _ = store::delete_user(pool, task.chat_id).await;
+            if let Err(e) = bot.send_message(chat_id, message).await {
+                error!("Failed to send notification to {}: {:?}", task.chat_id, e);
+                // Handle block/deactivated
+                if let teloxide::RequestError::Api(
+                    teloxide::ApiError::BotBlocked | teloxide::ApiError::UserDeactivated,
+                ) = &e
+                {
+                    info!(
+                        "User {} blocked bot or is deactivated. Removing...",
+                        task.chat_id
+                    );
+                    // We should delete all user data? Or just the specific subscription?
+                    // Probably delete user entirely if they blocked the bot.
+                    let _ = store::delete_user(pool, task.chat_id).await;
+                }
             }
-        }
-    }
+        })
+        .await;
 
     Ok(())
 }

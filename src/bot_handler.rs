@@ -212,11 +212,9 @@ async fn show_location_settings(
                 .reply_markup(keyboard)
                 .await?;
         }
-    } else {
-        if let Some(mid) = message_id {
-            bot.edit_message_text(chat_id, mid, "Location not found.")
-                .await?;
-        }
+    } else if let Some(mid) = message_id {
+        bot.edit_message_text(chat_id, mid, "Location not found.")
+            .await?;
     }
     Ok(())
 }
