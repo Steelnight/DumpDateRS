@@ -107,9 +107,12 @@ async fn dispatch_notifications(bot: &Bot, pool: &SqlitePool, time: &str) -> Res
 
     // Optimization: Send notifications in parallel with a concurrency limit.
     // This prevents one slow request from blocking others and speeds up the overall process.
-    // Using buffer_unordered with a limit (e.g., 50) allows processing multiple users at once.
+    // Telegram broadcasting limit is ~30 messages/second.
+    // A concurrency of 15 is a safe heuristic: even with fast network (200ms RTT),
+    // 15 req / 0.2s = 75 req/s (burst). But sustained average with processing overhead should be safer.
+    // To be strictly safe without a complex rate limiter, we keep this conservative.
     futures::stream::iter(tasks)
-        .for_each_concurrent(50, |task| async move {
+        .for_each_concurrent(15, |task| async move {
             let chat_id = ChatId(task.chat_id);
 
             // Determine prefix based on notify_offset
