@@ -135,6 +135,24 @@ async fn receive_alias_handler(
     if let Some(alias) = msg.text() {
         let alias = alias.trim();
 
+        if alias.len() > 50 {
+            bot.send_message(
+                msg.chat.id,
+                "Alias is too long. Please keep it under 50 characters.",
+            )
+            .await?;
+            return Ok(());
+        }
+
+        if alias.chars().any(|c| c.is_control()) {
+            bot.send_message(
+                msg.chat.id,
+                "Alias contains invalid characters. Please use standard text.",
+            )
+            .await?;
+            return Ok(());
+        }
+
         match store::add_user_location(&pool, msg.chat.id.0, &location_id, Some(alias)).await {
             Ok(user_loc_id) => {
                 for waste in WasteType::default_subscriptions() {
