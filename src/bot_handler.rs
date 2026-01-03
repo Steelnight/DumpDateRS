@@ -253,16 +253,18 @@ async fn callback_query_handler(
 
         match action {
             "edit" => {
-                if let Ok(loc_id) = parts[1].parse::<i64>() {
-                    show_location_settings(
-                        &bot,
-                        chat_id,
-                        q.message.as_ref().map(|m| m.id()),
-                        &pool,
-                        loc_id,
-                    )
-                    .await?;
-                    bot.answer_callback_query(q.id).await?;
+                if parts.len() > 1 {
+                    if let Ok(loc_id) = parts[1].parse::<i64>() {
+                        show_location_settings(
+                            &bot,
+                            chat_id,
+                            q.message.as_ref().map(|m| m.id()),
+                            &pool,
+                            loc_id,
+                        )
+                        .await?;
+                        bot.answer_callback_query(q.id).await?;
+                    }
                 }
             }
             "back" => {
@@ -318,34 +320,36 @@ async fn callback_query_handler(
                 }
             }
             "delloc" => {
-                if let Ok(loc_id) = parts[1].parse::<i64>() {
-                    let locations = store::get_user_locations(&pool, chat_id.0).await?;
-                    if let Some(loc) = locations.iter().find(|l| l.id == loc_id) {
-                        store::delete_user_location(&pool, chat_id.0, &loc.location_id).await?;
-
+                if parts.len() > 1 {
+                    if let Ok(loc_id) = parts[1].parse::<i64>() {
                         let locations = store::get_user_locations(&pool, chat_id.0).await?;
-                        if let Some(message) = q.message {
-                            if locations.is_empty() {
-                                bot.edit_message_text(
-                                    chat_id,
-                                    message.id(),
-                                    "No locations left.",
-                                )
-                                .reply_markup(InlineKeyboardMarkup::default())
-                                .await?;
-                            } else {
-                                bot.edit_message_text(
-                                    chat_id,
-                                    message.id(),
-                                    "Your Locations:",
-                                )
-                                .reply_markup(build_locations_keyboard(&locations))
-                                .await?;
+                        if let Some(loc) = locations.iter().find(|l| l.id == loc_id) {
+                            store::delete_user_location(&pool, chat_id.0, &loc.location_id).await?;
+
+                            let locations = store::get_user_locations(&pool, chat_id.0).await?;
+                            if let Some(message) = q.message {
+                                if locations.is_empty() {
+                                    bot.edit_message_text(
+                                        chat_id,
+                                        message.id(),
+                                        "No locations left.",
+                                    )
+                                    .reply_markup(InlineKeyboardMarkup::default())
+                                    .await?;
+                                } else {
+                                    bot.edit_message_text(
+                                        chat_id,
+                                        message.id(),
+                                        "Your Locations:",
+                                    )
+                                    .reply_markup(build_locations_keyboard(&locations))
+                                    .await?;
+                                }
                             }
+                            bot.answer_callback_query(q.id)
+                                .text("Location deleted.")
+                                .await?;
                         }
-                        bot.answer_callback_query(q.id)
-                            .text("Location deleted.")
-                            .await?;
                     }
                 }
             }
