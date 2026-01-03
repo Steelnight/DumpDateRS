@@ -358,7 +358,7 @@ async fn refresh_settings(
     loc_id: i64,
     text: &str,
 ) -> HandlerResult {
-    bot.answer_callback_query(&q.id).text(text).await?;
+    bot.answer_callback_query(q.id.clone()).text(text).await?;
 
     let locations = store::get_user_locations(pool, chat_id.0).await?;
     if let Some(loc) = locations.iter().find(|l| l.id == loc_id) {
