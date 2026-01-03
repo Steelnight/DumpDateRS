@@ -4,7 +4,7 @@ use anyhow::Result;
 use chrono::{Datelike, Duration, Local, Timelike};
 use futures::stream::StreamExt;
 use log::{error, info};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 use teloxide::prelude::*;
 use tokio_cron_scheduler::{Job, JobScheduler};
@@ -161,10 +161,14 @@ async fn update_all_icals(pool: &SqlitePool) -> Result<()> {
 
     // Get all unique location_ids from user_locations
     // We need to join with user_locations now because location_id is there
-    let locations: Vec<String> =
-        sqlx::query_scalar!("SELECT DISTINCT location_id FROM user_locations")
+    let rows = sqlx::query("SELECT DISTINCT location_id FROM user_locations")
             .fetch_all(pool)
             .await?;
+
+    let mut locations = Vec::new();
+    for row in rows {
+        locations.push(row.try_get::<String, _>("location_id")?);
+    }
 
     // Sentinel: Added timeout to prevent hanging if the external API is unresponsive.
     let client = reqwest::Client::builder()
